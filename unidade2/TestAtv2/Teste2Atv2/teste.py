@@ -1,13 +1,12 @@
 import os
 import time
-import random
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from PIL import Image
 from scipy.optimize import curve_fit
-
-
+import gc
+import random
 from pathlib import Path
 
 # Diretório onde está o arquivo teste.py
@@ -19,16 +18,21 @@ projeto_dir = base_dir.parent
 # Caminho correto para as imagens
 img_dir = projeto_dir / "minhas_imagens"
 
-print(f"Procurando imagens em: {img_dir}")
-print(f"Pasta existe? {img_dir.exists()}")
+# os.sched_setaffinity(0, {13})
 
 def fcm_processar_imagem(img, K, m=2.0, max_iter=100, epsilon=0.01):
     """
-    Executa o pipeline completo do FCM Puro[cite: 2].
+    Executa o pipeline completo do FCM Puro com proteções contra índice inválido e divisão por zero.
     """
+    
     largura, altura = img.size
+    
+    # Extração segura dos pixels da imagem
     pixels_2d = list(img.getdata())
     
+    # ====================================================================
+    # ALVO: MISSÃO 3 (Structure of Arrays - SoA)
+    # ====================================================================
     X = []
     for p in pixels_2d:
         X.append([float(p[0]), float(p[1]), float(p[2])])
@@ -45,7 +49,9 @@ def fcm_processar_imagem(img, K, m=2.0, max_iter=100, epsilon=0.01):
         [0, 255, 255]    # Cluster 5: Ciano
     ]
     
-    # Inicialização da Matriz de Pertinência U
+    # ====================================================================
+    # ALVO: MISSÃO 1 (Memory Flattening)
+    # ====================================================================
     U = []
     for i in range(N):
         linha = []
@@ -62,8 +68,12 @@ def fcm_processar_imagem(img, K, m=2.0, max_iter=100, epsilon=0.01):
                 linha[j] = linha[j] / soma_linha
         U.append(linha)
         
-    # Laço Principal do FCM
+    # 4. LAÇO PRINCIPAL DO FCM (Puro)
     for iteracao in range(max_iter):
+        
+        # ====================================================================
+        # ALVO: MISSÃO 2 (Fixed Point Math / Fuga da FPU)
+        # ====================================================================
         C = []
         for j in range(K):
             numerador = [0.0] * canais
@@ -72,6 +82,10 @@ def fcm_processar_imagem(img, K, m=2.0, max_iter=100, epsilon=0.01):
             for i in range(N):
                 u_m = U[i][j] ** m
                 denominador += u_m
+                
+                # ====================================================================
+                # ALVO: MISSÃO 4 (Loop Unrolling)
+                # ====================================================================
                 for c in range(canais):
                     numerador[c] += u_m * X[i][c]
             
@@ -86,6 +100,9 @@ def fcm_processar_imagem(img, K, m=2.0, max_iter=100, epsilon=0.01):
         U_nova = []
         max_diff = 0.0
         
+        # ====================================================================
+        # ALVO: MISSÃO 6 (Loop Fission)
+        # ====================================================================
         for i in range(N):
             linha_nova = [0.0] * K
             distancias = [0.0] * K
@@ -96,6 +113,10 @@ def fcm_processar_imagem(img, K, m=2.0, max_iter=100, epsilon=0.01):
                     diff = X[i][c] - C[j][c]
                     soma_quadrados += diff * diff
                 distancias[j] = soma_quadrados ** 0.5 
+                
+                # ====================================================================
+                # ALVO: MISSÃO 5 (Early Exit / Poda Condicional)
+                # ====================================================================
                 
             for j in range(K):
                 if distancias[j] == 0.0:
@@ -122,12 +143,14 @@ def fcm_processar_imagem(img, K, m=2.0, max_iter=100, epsilon=0.01):
                 
             U_nova.append(linha_nova)
             
+        # O U TEM QUE SER ATUALIZADO AQUI FORA DO LAÇO DE PIXELS!
         U = U_nova
             
         if max_diff < epsilon:
+            print(f"-> Convergiu na iteração {iteracao}!")
             break
             
-    # Colorização por pertinência máxima
+    # 5. FASE 5: COLORIZAÇÃO POR PERTINÊNCIA MÁXIMA
     pixels_segmentados_lista = []
     for i in range(N):
         maior_pertinencia = -1.0
@@ -140,48 +163,86 @@ def fcm_processar_imagem(img, K, m=2.0, max_iter=100, epsilon=0.01):
         cor = paleta_cores[cluster_vencedor % len(paleta_cores)]
         pixels_segmentados_lista.append((cor[0], cor[1], cor[2]))
         
+    # 6. RESHAPE MANUAL E SALVAMENTO
     imagem_final = Image.new("RGB", (largura, altura))
     imagem_final.putdata(pixels_segmentados_lista)
     
     return C, U, imagem_final
 
-# Função de ponte exigida pelo experimentador:
+# ==========================================
+# 1. Função do Aluno (FCM Puro)
+# ==========================================
 def segmenta_imagem(imagem_array, k):
     """
-    Recebe o array do experimentador, converte para imagem PIL, 
-    executa o FCM e retorna a imagem segmentada[cite: 1, 2].
+    Substitua pelo script real de segmentação do aluno.
+    Recebe o array da imagem já em memória e o número de clusters K.
     """
+    # Converte o array numpy da imagem para o formato PIL que o FCM Puro exige
     img_pil = Image.fromarray(imagem_array.astype('uint8'), 'RGB')
-    centroides, pertinencias, imagem_final = fcm_processar_imagem(img_pil, K=k)
-    return imagem_final
+    
+    # Chama a função do FCM Puro
+    centroides, pertinencias, imagem_segmentada = fcm_processar_imagem(img_pil, K=k)
+    
+def exibir_equacao_ajustada(popt, X_data, y_data):
+    """
+    Exibe no terminal a equação ajustada com notação científica legível,
+    os coeficientes individuais e o coeficiente de determinação (R²).
+    """
+    alpha, beta, gamma, delta = popt
+    
+    # Cálculo do R² (Coeficiente de Determinação)
+    y_pred = model_n_k(X_data, *popt)
+    ss_res = np.sum((y_data - y_pred) ** 2)
+    ss_tot = np.sum((y_data - np.mean(y_data)) ** 2)
+    r2 = 1.0 - (ss_res / ss_tot) if ss_tot != 0 else 0.0
 
+    print("\n" + "="*60)
+    print("   MODELO EMPÍRICO AJUSTADO: T(n, K)")
+    print("="*60)
+    print("Formulação Geral:")
+    print("  T(n, K) = α·(n·K) + β·n + γ·K + δ\n")
+    print("Parâmetros Identificados:")
+    print(f"  α (alpha) = {alpha:14.6e} s/(pixel·cluster)")
+    print(f"  β (beta)  = {beta:14.6e} s/pixel")
+    print(f"  γ (gamma) = {gamma:14.6e} s/cluster")
+    print(f"  δ (delta) = {delta:14.6e} s (overhead base)")
+    print("-" * 60)
+    print("Equação Parametrizada:")
+    print(f"  T(n, K) = ({alpha:.4e})·(n·K) + ({beta:.4e})·n + ({gamma:.4e})·K + ({delta:.4e})")
+    print(f"Aderência Estatística (R²): {r2:.4f}")
+    print("="*60 + "\n")
 
-print(f"Procurando imagens em: {img_dir}")
 
 # ==========================================
-# Descoberta e Ordenação Ligeira (Sem estourar RAM)
+# 2. Descoberta e Ordenação Ligeira (Sem estourar RAM)
 # ==========================================
-# img_dir = "./minhas_imagens" 
-k_list = [2, 3, 4]
-R = 30 # Número de repetições por combinação
+# k_list = [2, 3, 4]
+k_list = [2,3]
+# R = 30
+R = 10 # Número de repetições por combinação
 
 print("Mapeando imagens e calculando 'n' (apenas cabeçalhos)...")
 arquivos_n = []
 
+# Varre os arquivos no diretório especificado
 if os.path.exists(img_dir):
     for filename in os.listdir(img_dir):
-        if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tif')):
+        if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tif', 'avif')):
             filepath = os.path.join(img_dir, filename)
+            
+            # Image.open lê apenas os metadados. Não aloca a matriz de pixels.
             with Image.open(filepath) as img:
                 w, h = img.size
                 n = w * h
                 arquivos_n.append({'arquivo': filename, 'caminho': filepath, 'n': n})
 
+# Ordena a lista de dicionários pelo valor de 'n' crescente
 arquivos_n = sorted(arquivos_n, key=lambda x: x['n'])
+
 print(f"{len(arquivos_n)} imagens ordenadas prontas para processamento.")
 
 # ==========================================
-# Execução (Carregando sob demanda)
+# 3. Execução (Carregando sob demanda)
 # ==========================================
 resultados = []
 
@@ -191,40 +252,56 @@ for item in arquivos_n:
     nome_arquivo = item['arquivo']
     
     print(f"Carregando {nome_arquivo} para a RAM (n={n})...")
+    
+    # Carrega a imagem real para a RAM apenas no momento de usar
     with Image.open(filepath) as img:
         img_array = np.array(img)
     
+    # Executa todas as repetições e Ks para esta imagem
     for k in k_list:
-        for r in range(R):
-            t0 = time.perf_counter()
-            segmenta_imagem(img_array, k)  # Chama o FCM definido na Célula 2
-            t1 = time.perf_counter()
+        
+        gc.collect()
+        gc.disable()
+        
+        try:
+                
+            for r in range(R):
+                t0 = time.perf_counter()
+                segmenta_imagem(img_array, k)  # A matriz é passada aqui
+                t1 = time.perf_counter()
+                
+                resultados.append({
+                    'arquivo': nome_arquivo,
+                    'n': n,     
+                    'k': k, 
+                    'repeticao': r, 
+                    'tempo': (t1 - t0)
+                })
+
+        finally:
+            gc.enable()   
             
-            resultados.append({
-                'arquivo': nome_arquivo,
-                'n': n, 
-                'k': k, 
-                'repeticao': r, 
-                'tempo': (t1 - t0)
-            })
-            
+    # Libera a RAM explicitamente antes de carregar a próxima imagem
     del img_array
     print(f"Análise de {nome_arquivo} concluída. Memória liberada.")
 
+# Transforma os resultados em DataFrame
 df_raw = pd.DataFrame(resultados)
 
 # ==========================================
-# Pré-processamento, Validação e Gráficos F.O.C.A.
+# 4. Pré-processamento e Validação F.O.C.A.
 # ==========================================
 if not df_raw.empty:
     df_filtered = pd.DataFrame()
     
+    # Filtragem de Outliers (Percentis 5 e 95)
     for (n, k), group in df_raw.groupby(['n', 'k']):
         p05 = group['tempo'].quantile(0.05)
         p95 = group['tempo'].quantile(0.95)
         valid_mask = (group['tempo'] >= p05) & (group['tempo'] <= p95)
         df_filtered = pd.concat([df_filtered, group[valid_mask]])
     
+    # Validação de Estabilidade (Média, Desvio e CV)
     resumo = df_filtered.groupby(['n', 'k']).agg(
         tempo_medio=('tempo', 'mean'),
         desvio=('tempo', 'std'),
@@ -237,6 +314,9 @@ if not df_raw.empty:
     print("\n--- Resumo de Estabilidade ---")
     print(resumo)
     
+    # ==========================================
+    # 5. Ajuste de Curvas
+    # ==========================================
     def model_n_k(X, alpha, beta, gamma, delta):
         n, k = X
         return alpha * (n * k) + beta * n + gamma * k + delta
@@ -244,34 +324,43 @@ if not df_raw.empty:
     X_data = np.vstack((resumo['n'], resumo['k']))
     y_data = resumo['tempo_medio']
     
+    # O p0 pode precisar de sintonia dependendo da escala de tempo real
     popt, _ = curve_fit(model_n_k, X_data, y_data, p0=[1e-6, 1e-6, 1e-6, 0.01], maxfev=10000)
     resumo['tempo_predito'] = model_n_k(X_data, *popt)
+    exibir_equacao_ajustada(popt, X_data, y_data)
     
-    # Plotagens Bidimensionais
+    # ==========================================
+    # 6. Plotagens Bidimensionais
+    # ==========================================
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
     
+    # Plot A: Tempo vs n
     colors_k = ['red', 'green', 'blue', 'orange', 'purple'] 
     for idx, k in enumerate(k_list):
         dados_k = resumo[resumo['k'] == k]
         if not dados_k.empty:
             c = colors_k[idx % len(colors_k)]
-            ax1.plot(dados_k['n'], dados_k['tempo_medio'], marker='o', color=c, label=f'K={k} (Empírico)')
-            ax1.plot(dados_k['n'], dados_k['tempo_predito'], linestyle='--', color=c, alpha=0.6)
-    
+            ax1.plot(dados_k['n'], dados_k['tempo_medio'], marker='o', 
+                     color=c, label=f'K={k} (Empírico)')
+            ax1.plot(dados_k['n'], dados_k['tempo_predito'], linestyle='--', 
+                     color=c, alpha=0.6)
     ax1.set_xlabel('Número de Pixels (n)')
     ax1.set_ylabel('Tempo Médio de Execução (s)')
     ax1.set_title('Tempo vs Tamanho da Imagem')
     ax1.legend()
     ax1.grid(True, alpha=0.3)
     
+    # Plot B: Tempo vs K
     n_processados = sorted(resumo['n'].unique())
     colors_n = plt.cm.viridis(np.linspace(0, 1, len(n_processados)))
     
     for idx, n_val in enumerate(n_processados):
         dados_n = resumo[resumo['n'] == n_val]
         if not dados_n.empty:
-            ax2.plot(dados_n['k'], dados_n['tempo_medio'], marker='s', color=colors_n[idx], label=f'n={n_val}')
-            ax2.plot(dados_n['k'], dados_n['tempo_predito'], linestyle='--', color=colors_n[idx], alpha=0.6)
+            ax2.plot(dados_n['k'], dados_n['tempo_medio'], marker='s', 
+                     color=colors_n[idx], label=f'n={n_val}')
+            ax2.plot(dados_n['k'], dados_n['tempo_predito'], linestyle='--', 
+                     color=colors_n[idx], alpha=0.6)
     
     ax2.set_xlabel('Número de Clusters (K)')
     ax2.set_title('Tempo vs Número de Clusters')
@@ -280,14 +369,122 @@ if not df_raw.empty:
     ax2.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig('relatorio_complexidade.png', dpi=300)
+    plt.savefig('../outputs/relatorio_complexidade.png', dpi=300)
     plt.show()
-    
+
+     # ==========================================
+    # 6.5. Plotagem da Superfície 3D
+    # Tempo(n, k)
+    # ==========================================
+
+    fig_3d = plt.figure(figsize=(10, 8))
+
+    ax_3d = fig_3d.add_subplot(
+        111,
+        projection='3d'
+    )
+
+    # Cria uma malha de valores para n e k
+    n_linspace = np.linspace(
+        resumo['n'].min(),
+        resumo['n'].max(),
+        50
+    )
+
+    k_linspace = np.linspace(
+        resumo['k'].min(),
+        resumo['k'].max(),
+        50
+    )
+
+    N_mesh, K_mesh = np.meshgrid(
+        n_linspace,
+        k_linspace
+    )
+
+    # Calcula os tempos previstos pelo modelo ajustado
+    T_mesh = model_n_k(
+        (N_mesh, K_mesh),
+        *popt
+    )
+
+    # Desenha a superfície teórica
+    surf = ax_3d.plot_surface(
+        N_mesh,
+        K_mesh,
+        T_mesh,
+        cmap='viridis',
+        alpha=0.7,
+        linewidth=0,
+        antialiased=True
+    )
+
+    # Adiciona a barra de cores
+    fig_3d.colorbar(
+        surf,
+        ax=ax_3d,
+        shrink=0.6,
+        aspect=12,
+        pad=0.1,
+        label='Tempo previsto (s)'
+    )
+
+    # Sobrepõe os dados experimentais
+    ax_3d.scatter(
+        resumo['n'],
+        resumo['k'],
+        resumo['tempo_medio'],
+        color='red',
+        edgecolor='black',
+        s=60,
+        label='Dados experimentais',
+        depthshade=False
+    )
+
+    # Configura os eixos
+    ax_3d.set_xlabel('Número de pixels (n)')
+    ax_3d.set_ylabel('Número de clusters (k)')
+    ax_3d.set_zlabel('Tempo de execução (s)')
+
+    ax_3d.set_title(
+        'Superfície de Tempo de Execução T(n, k)'
+    )
+
+    # Ajusta o ângulo de visualização
+    ax_3d.view_init(
+        elev=25,
+        azim=135
+    )
+
+    ax_3d.legend()
+
+    plt.tight_layout()
+
+    # Salva a figura
+    plt.savefig(
+        '../outputs/superficie_3d_foca.png',
+        dpi=300,
+        bbox_inches='tight'
+    )
+
+    plt.show()
+
+    print(
+        "\nSuperfície 3D gerada e salva em "
+        "'../outputs/superficie_3d_foca.png'."
+    )
+
     print("\nPipeline concluído. Gráficos gerados e salvos como 'relatorio_complexidade.png'.")
     
-    # Exportação para CSV
+    # ==========================================
+    # 7. Exportação dos Dados para Avaliação
+    # ==========================================
     arquivo_csv = 'resultados_foca_aluno.csv'
+    
+    # Exporta os dados usando ponto e vírgula como separador e vírgula para decimais,
+    # garantindo que o arquivo seja aberto corretamente no Excel em PT-BR.
     resumo.to_csv(arquivo_csv, index=False, float_format='%.6f', sep=';', decimal=',')
+    
     print(f"Tabela de avaliação exportada com sucesso para: {arquivo_csv}")
     
 else:
