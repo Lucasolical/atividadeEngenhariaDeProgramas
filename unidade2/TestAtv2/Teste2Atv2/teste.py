@@ -219,7 +219,7 @@ def exibir_equacao_ajustada(popt, X_data, y_data):
 # k_list = [2, 3, 4]
 k_list = [2,3]
 # R = 30
-R = 10 # Número de repetições por combinação
+R = 3 # Número de repetições por combinação
 
 print("Mapeando imagens e calculando 'n' (apenas cabeçalhos)...")
 arquivos_n = []
